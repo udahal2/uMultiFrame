@@ -25,11 +25,12 @@ from typing import (
     Optional,
     Set,
     Union,
+    cast,
 )
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
-    from mcp import ListToolsResult, Tool
+    from mcp import ClientSession, ListToolsResult, Tool
 
 from camel.logger import get_logger
 from camel.toolkits import BaseToolkit, FunctionTool
@@ -56,6 +57,8 @@ class _MCPServer(BaseToolkit):
         env (Dict[str, str]): Environment variables for the stdio mode command.
             (default: :obj:`'None'`)
         timeout (Optional[float]): Connection timeout. (default: :obj:`'None'`)
+        headers (Dict[str, str]): Headers for the HTTP request.
+            (default: :obj:`'None'`)
     """
 
     def __init__(
@@ -64,15 +67,16 @@ class _MCPServer(BaseToolkit):
         args: Optional[List[str]] = None,
         env: Optional[Dict[str, str]] = None,
         timeout: Optional[float] = None,
+        headers: Optional[Dict[str, str]] = None,
     ):
         from mcp import Tool
-        from mcp.client.session import ClientSession
 
         super().__init__(timeout=timeout)
 
         self.command_or_url = command_or_url
         self.args = args or []
         self.env = env or {}
+        self.headers = headers or {}
 
         self._mcp_tools: List[Tool] = []
         self._session: Optional['ClientSession'] = None
@@ -99,11 +103,18 @@ class _MCPServer(BaseToolkit):
                     read_stream,
                     write_stream,
                 ) = await self._exit_stack.enter_async_context(
-                    sse_client(self.command_or_url)
+                    sse_client(
+                        self.command_or_url,
+                        headers=self.headers,
+                    )
                 )
             else:
+                command = self.command_or_url
+                if os.name == "nt" and command.lower() == "npx":
+                    command = "npx.cmd"
+
                 server_parameters = StdioServerParameters(
-                    command=self.command_or_url, args=self.args, env=self.env
+                    command=command, args=self.args, env=self.env
                 )
                 (
                     read_stream,
@@ -320,6 +331,10 @@ class _MCPServer(BaseToolkit):
             for mcp_tool in self._mcp_tools
         ]
 
+    @property
+    def session(self) -> Optional["ClientSession"]:
+        return self._session
+
 
 class MCPToolkit(BaseToolkit):
     r"""MCPToolkit provides a unified interface for managing multiple
@@ -339,6 +354,27 @@ class MCPToolkit(BaseToolkit):
         Either `servers` or `config_path` must be provided. If both are
         provided, servers from both sources will be combined.
 
+        For web servers in the config file, you can specify authorization
+        headers using the "headers" field to connect to protected MCP server
+        endpoints.
+
+        Example configuration:
+
+        .. code-block:: json
+
+            {
+              "mcpServers": {
+                "protected-server": {
+                  "url": "https://example.com/mcp",
+                  "timeout": 30,
+                  "headers": {
+                    "Authorization": "Bearer YOUR_TOKEN",
+                    "X-API-Key": "YOUR_API_KEY"
+                  }
+                }
+              }
+            }
+
     Attributes:
         servers (List[_MCPServer]): List of _MCPServer instances being managed.
     """
@@ -356,7 +392,7 @@ class MCPToolkit(BaseToolkit):
                 "Servers from both sources will be combined."
             )
 
-        self.servers = servers or []
+        self.servers: List[_MCPServer] = servers or []
 
         if config_path:
             self.servers.extend(self._load_servers_from_config(config_path))
@@ -388,7 +424,6 @@ class MCPToolkit(BaseToolkit):
 
         all_servers = []
 
-        # Process local MCP servers
         mcp_servers = data.get("mcpServers", {})
         if not isinstance(mcp_servers, dict):
             logger.warning("'mcpServers' is not a dictionary, skipping...")
@@ -401,42 +436,17 @@ class MCPToolkit(BaseToolkit):
                 )
                 continue
 
-            if "command" not in cfg:
+            if "command" not in cfg and "url" not in cfg:
                 logger.warning(
-                    f"Missing required 'command' field for server '{name}'"
+                    f"Missing required 'command' or 'url' field for server "
+                    f"'{name}'"
                 )
                 continue
 
             server = _MCPServer(
-                command_or_url=cfg["command"],
+                command_or_url=cast(str, cfg.get("command") or cfg.get("url")),
                 args=cfg.get("args", []),
                 env={**os.environ, **cfg.get("env", {})},
-                timeout=cfg.get("timeout", None),
-            )
-            all_servers.append(server)
-
-        # Process remote MCP web servers
-        mcp_web_servers = data.get("mcpWebServers", {})
-        if not isinstance(mcp_web_servers, dict):
-            logger.warning("'mcpWebServers' is not a dictionary, skipping...")
-            mcp_web_servers = {}
-
-        for name, cfg in mcp_web_servers.items():
-            if not isinstance(cfg, dict):
-                logger.warning(
-                    f"Configuration for web server '{name}' must"
-                    "be a dictionary"
-                )
-                continue
-
-            if "url" not in cfg:
-                logger.warning(
-                    f"Missing required 'url' field for web server '{name}'"
-                )
-                continue
-
-            server = _MCPServer(
-                command_or_url=cfg["url"],
                 timeout=cfg.get("timeout", None),
             )
             all_servers.append(server)
