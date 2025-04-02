@@ -8,9 +8,6 @@ param(
     $rule = "default"
 )
 
-<# NOTE: Update these variables to target different files with this script. #>
-$MAIN = "src.app"
-$CP_DELIM = ";"
 if ( $IsMacOS -or $IsLinux ) {
     $CP_DELIM = ":" # changes to : for Mac or Linux
 }
@@ -72,28 +69,7 @@ elseif ( $rule -eq "update" ) {
 
 elseif ( $rule -eq "run" ) {
     Write-Output "Running the application..."
-
-    # Check if it's a Python project
-    if (Test-Path "requirements.txt") {
-        Write-Output "Python project detected, starting Gunicorn server..."
-        Start-Process "gunicorn" -ArgumentList "runner:app", "--bind", "0.0.0.0:10000"
-        Start-Process "cmd.exe" -ArgumentList "/c start http://localhost:10000"
-    }
-    else {
-        Write-Output "No Python project detected. Please specify 'run nodejs' if you want to run a Node.js project."
-    }
-}
-
-elseif ( $rule -eq "run nodejs" ) {
-    Write-Output "Running Node.js project..."
-
-    if (Test-Path "package.json") {
-        Write-Output "Starting existing Node.js application..."
-        Start-Process "node" -ArgumentList "app.js"
-    }
-    else {
-        Write-Output "Node.js project not found. Please initialize it first."
-    }
+    python use_camel.py
 }
 
 elseif ( $rule -eq "exit" ) {
@@ -106,10 +82,10 @@ elseif ( $rule -eq "exit" ) {
     $port = 10000
     $netstatOutput = netstat -ano | FindStr $port
     if ($netstatOutput) {
-        $pid = ($netstatOutput -split "\s+")[-1]
-        if ($pid) {
-            Stop-Process -Id $pid -Force
-            Write-Output "Closed port $port and killed process with PID $pid."
+        $processId = ($netstatOutput -split "\s+")[-1]
+        if ($processId) {
+            Stop-Process -Id $processId -Force
+            Write-Output "Closed port $port and killed process with PID $processId."
         } else {
             Write-Output "No process found for port $port."
         }
